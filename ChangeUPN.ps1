@@ -1,0 +1,2 @@
+$LocalUsers = Get-ADUser -Filter {UserPrincipalName -like '*coopind*'} -SearchBase "enter OU DN" -Properties UserPrincipalName -ResultSetSize $null
+$LocalUsers | foreach {$newUpn = $_.UserPrincipalName.Replace("coopind.com","gillman.com"); $_ | Set-ADUser -UserPrincipalName $newUpn}
