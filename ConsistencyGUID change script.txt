@@ -1,0 +1,62 @@
+#Requires -Version 7
+#Requires -Modules Microsoft.Graph.Authentication
+#Requires -Modules Microsoft.Graph.Users
+#Requires -Modules ActiveDirectory
+
+$dry_run = $false
+$clear_values = $false
+
+# $ad_ou = "OU=OktaTest,OU=Users,OU=LA,DC=sda,DC=skydance,DC=xyz"
+# $ad_server = "samsrvdcp007.sda.skydance.xyz"
+# $ad_ou = "OU=Production,OU=Users,OU=Madrid,DC=sda,DC=skydance,DC=xyz"
+# $ad_server = "samsrvdcp007.sda.skydance.xyz"
+$ad_ou = "OU=Production,OU=Users,OU=LA,DC=sda,DC=skydance,DC=xyz"
+$ad_server = "samsrvdcp007.sda.skydance.xyz"
+# $ad_ou = "OU=Test Group Replicated to Okta,DC=corp,DC=skydance,DC=xyz"
+# $ad_server = "samsrvdcp009.corp.skydance.xyz"
+if ($null -eq $ad_credentials) {
+    $ad_credentials = Get-Credential -UserName 'SKYDANCE\admin.jnegro'
+}
+
+if ($dry_run) {
+    Write-Warning "Dry run enabled. Won't make any changes..."
+}
+else {
+    Write-Warning "Dry run disbaled. This WILL make changes..."
+    Pause
+}
+
+Write-Verbose "Connect to Azure AD Graph"
+Connect-MgGraph –Scopes "User.Read.All" -NoWelcome
+
+Write-Verbose "Getting AD users from OU $ad_ou, server $ad_server"
+$adusers = Get-ADUser -SearchBase $ad_ou -Filter * -Properties mail, mS-DS-ConsistencyGuid -Server $ad_server
+foreach ($aduser in $adusers) {
+    $aduserConsistencyGuid_string = $aduser.'mS-DS-ConsistencyGuid' -join ','
+    if ($clear_values) {
+        Write-Host "$($aduser.mail): Clearing mS-DS-ConsistencyGuid value ($aduserConsistencyGuid_string)"
+        if (-not $dry_run) {
+            $aduser | Set-ADUser -Clear 'mS-DS-ConsistencyGuid' -Server $ad_server -Credential $ad_credentials
+        }
+        continue
+    }
+    Write-Verbose "$($aduser.mail): Getting Azure AD user"
+    $aad_immutableid = Get-MgUser -Filter "Mail eq '$($aduser.mail)'" -Property OnPremisesImmutableId | Select-Object -ExpandProperty OnPremisesImmutableId
+    $targetConsistencyGuid = [Convert]::FromBase64String($aad_immutableid)
+    $targetConsistencyGuid_string = $targetConsistencyGuid -join ','
+
+    if ($targetConsistencyGuid_string -eq $aduserConsistencyGuid_string) {
+        Write-Host "$($aduser.mail): mS-DS-ConsistencyGuid is synced" -ForegroundColor Green
+    }
+    else {
+        if ($aduserConsistencyGuid_string -eq '') {
+            Write-Host "$($aduser.mail): mS-DS-ConsistencyGuid AD field is empty. Setting it to $targetConsistencyGuid_string"
+        }
+        else {
+            Write-Warning "$($aduser.mail): mS-DS-ConsistencyGuid AD field is NOT empty ($aduserConsistencyGuid_string). Setting it to $targetConsistencyGuid_string"
+        }
+        if (-not $dry_run) {
+            $aduser | Set-ADUser -Replace @{'mS-DS-ConsistencyGuid' = $targetConsistencyGuid } -Server $ad_server -Credential $ad_credentials
+        }
+    }
+}
